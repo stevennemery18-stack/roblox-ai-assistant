@@ -1,0 +1,17 @@
+{
+  "name": "RobloxAIAssistant",
+  "version": "1.0.0",
+  "description": "AI-powered code generation plugin for Roblox Studio",
+  "author": "Your Name",
+  "license": "MIT",
+  "main": "RobloxAIAssistant.lua",
+  "keywords": [
+    "roblox",
+    "plugin",
+    "ai",
+    "code-generation",
+    "studio",
+    "lua",
+    "luau"
+  ]
+}
