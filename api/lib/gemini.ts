@@ -94,33 +94,23 @@ export async function generateCode({
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
     const result = await model.generateContent({
-      contents: [
+  contents: [
+    {
+      role: 'user',
+      parts: [
         {
-          role: 'user',
-          parts: [
-            {
-              text: fullPrompt,
-            },
-          ],
+          text: fullPrompt,
         },
       ],
-      generationConfig: {
-        temperature: 0.7,
-        topP: 0.8,
-        topK: 40,
-        maxOutputTokens: 2048,
-      },
-      safetySettings: [
-        {
-          category: 'HARM_CATEGORY_UNSPECIFIED',
-          threshold: 'BLOCK_NONE',
-        },
-        {
-          category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
-          threshold: 'BLOCK_NONE',
-        },
-      ],
-    });
+    },
+  ],
+  generationConfig: {
+    temperature: 0.7,
+    topP: 0.8,
+    topK: 40,
+    maxOutputTokens: 2048,
+  },
+});
 
     const response = result.response;
     let code = response.text();
