@@ -7,38 +7,51 @@ const supabase = createClient(
 );
 
 interface HealthResponse {
-  status: 'ok' | 'error';
+  status: string;
   timestamp: string;
-  database?: 'ok' | 'error';
-  gemini?: 'ok' | 'error';
+  database: string;
+  gemini: string;
 }
 
 export default async function handler(
   req: NextApiRequest,
   res: NextApiResponse<HealthResponse>
 ) {
-  const timestamp = new Date().toISOString();
-  let dbStatus: 'ok' | 'error' = 'ok';
-
-  // Check database connection
   try {
-    const { error } = await supabase
-      .from('users')
-      .select('id')
-      .limit(1);
-    if (error) dbStatus = 'error';
+    // Check database connection
+    let dbStatus = 'error';
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id')
+        .limit(1);
+      
+      if (!error) {
+        dbStatus = 'ok';
+      }
+    } catch (e) {
+      dbStatus = 'error';
+    }
+
+    // Check Gemini API key
+    let geminiStatus = 'error';
+    if (process.env.GEMINI_API_KEY) {
+      geminiStatus = 'ok';
+    }
+
+    res.status(200).json({
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      database: dbStatus,
+      gemini: geminiStatus,
+    });
   } catch (error) {
-    dbStatus = 'error';
+    console.error('Health check error:', error);
+    res.status(500).json({
+      status: 'error',
+      timestamp: new Date().toISOString(),
+      database: 'error',
+      gemini: 'error',
+    });
   }
-
-  const geminiStatus = process.env.GEMINI_API_KEY ? 'ok' : 'error';
-
-  const overallStatus = dbStatus === 'ok' && geminiStatus === 'ok' ? 'ok' : 'error';
-
-  res.status(overallStatus === 'ok' ? 200 : 503).json({
-    status: overallStatus,
-    timestamp,
-    database: dbStatus,
-    gemini: geminiStatus,
-  });
 }
