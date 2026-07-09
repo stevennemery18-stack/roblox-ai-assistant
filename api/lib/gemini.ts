@@ -81,6 +81,8 @@ export async function generateCode({
   try {
     const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
 
+    const systemPrompt = buildSystemPrompt(contextCode);
+
     let userPrompt = prompt;
     if (requestType === 'edit' && contextCode) {
       userPrompt = `[REQUEST TYPE: EDIT MODE]\nModify the following code to: ${prompt}\n\nOriginal code:\n\`\`\`lua\n${contextCode}\n\`\`\``;
@@ -88,18 +90,20 @@ export async function generateCode({
       userPrompt = `[REQUEST TYPE: CREATE MODE]\nGenerate new Luau code for: ${prompt}\n\nReturn ONLY the code, wrapped in a single lua code block.`;
     }
 
+    // Combine system prompt with user prompt
+    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+
     const result = await model.generateContent({
       contents: [
         {
           role: 'user',
           parts: [
             {
-              text: userPrompt,
+              text: fullPrompt,
             },
           ],
         },
       ],
-      systemInstruction: buildSystemPrompt(contextCode),
       generationConfig: {
         temperature: 0.7,
         topP: 0.8,
