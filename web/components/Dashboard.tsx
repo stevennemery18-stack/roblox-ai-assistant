@@ -10,6 +10,7 @@ interface User {
   username: string;
   display_name: string;
   api_token: string;
+  api_token_created_at: string;
   total_generations: number;
   total_tokens_used: number;
 }
