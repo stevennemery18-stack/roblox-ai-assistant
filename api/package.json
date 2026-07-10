@@ -3,11 +3,11 @@
   "version": "1.0.0",
   "description": "Backend API for Roblox AI Assistant",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
-  },
+  "dev": "next dev",
+  "build": "next build",
+  "start": "node -r ts-node/register server.ts",
+  "lint": "next lint"
+}
   "dependencies": {
     "@google/generative-ai": "^0.3.0",
     "@supabase/supabase-js": "^2.38.0",
