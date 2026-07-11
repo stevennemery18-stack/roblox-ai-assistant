@@ -8,60 +8,6 @@ const apiKey =
 
 const genAI = new GoogleGenerativeAI(apiKey);
 
-/**
- * Enhanced system prompt for Roblox Luau code generation
- * Enforces modern Luau practices and Roblox best practices
- */
-function buildSystemPrompt(contextCode?: string): string {
-  let prompt = `You are an expert Roblox game developer and Lua/Luau specialist.
-
-## CRITICAL RULES:
-1. ALWAYS use modern Luau syntax with strict typing
-2. Use 'task.wait()' NEVER use 'wait()'
-3. Use 'task.defer()' for deferred execution
-4. Use 'task.delay()' for delays with callbacks
-5. NEVER use deprecated methods like Workspace:FindPartOnRay (use Raycast instead)
-6. NEVER use Humanoid:MoveTo or old movement APIs
-7. Always use local variables with explicit types when possible
-8. Use 'local' keyword for all variables (no globals)
-9. Use '::' for type annotations: local x: number = 5
-10. Avoid nested callbacks - use task library instead
-11. Always include comments explaining complex logic
-12. Use modern Roblox APIs (Instance.new, GetService, etc.)
-13. Follow Roblox naming conventions: camelCase for variables, PascalCase for classes
-14. Return code that is production-ready and optimized
-
-## CODE STYLE:
-- Use tabs for indentation (Roblox standard)
-- Max line length: 100 characters
-- Add comments for non-obvious logic
-- Use local functions for helper code
-- Always validate input parameters
-
-## SAFETY:
-- Never use getfenv() or setfenv()
-- Never use loadstring() or load()
-- Always check if instances exist before accessing properties
-- Use pcall() for risky operations
-- Avoid infinite loops - always include exit conditions
-
-## ROBLOX SERVICES:
-- game:GetService() for all services
-- UserInputService for input handling
-- RunService for game loops
-- HttpService for web requests with pcall
-- TweenService for smooth animations
-- Debris for cleanup
-`;
-
-  if (contextCode) {
-    prompt += `\n## CURRENT CODE CONTEXT:\n\`\`\`lua\n${contextCode}\n\`\`\`\n`;
-    prompt += `\nYou are working with or modifying the above code. Maintain consistency with existing patterns and style.\n`;
-  }
-
-  return prompt;
-}
-
 interface GenerateCodeOptions {
   prompt: string;
   contextCode?: string;
@@ -74,8 +20,69 @@ interface GenerateCodeResponse {
   generationTimeMs: number;
 }
 
+function extractJsonOnly(text: string): string {
+  let cleaned = String(text || '').trim();
+
+  cleaned = cleaned
+    .replace(/^```json\s*/i, '')
+    .replace(/^```lua\s*/i, '')
+    .replace(/^```luau\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/```\s*$/i, '')
+    .trim();
+
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+
+  if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+  }
+
+  return cleaned.trim();
+}
+
+function looksLikeJsonBuilderRequest(prompt: string): boolean {
+  return (
+    prompt.includes('Return ONLY valid JSON') ||
+    prompt.includes('Required JSON schema') ||
+    prompt.includes('"objects"') ||
+    prompt.includes('The plugin will parse your JSON')
+  );
+}
+
+function buildCodeSystemPrompt(contextCode?: string): string {
+  let systemPrompt = `You are an expert Roblox game developer and Lua/Luau specialist.
+
+CRITICAL RULES:
+1. Use modern Luau syntax.
+2. Use task.wait(), not wait().
+3. Never use deprecated APIs.
+4. Return ONLY code.
+5. No explanations.
+6. No markdown unless specifically requested.
+7. Use game:GetService() for services.
+8. Validate instances before using them.
+9. Avoid malicious code.
+`;
+
+  if (contextCode) {
+    systemPrompt += `
+
+CURRENT CODE CONTEXT:
+\`\`\`lua
+${contextCode}
+\`\`\`
+`;
+  }
+
+  return systemPrompt;
+}
+
 /**
- * Call Gemini API to generate Roblox Luau code
+ * Call Gemini API.
+ * IMPORTANT:
+ * - For the one-button Studio builder plugin, this returns JSON build plans.
+ * - For old code-generation calls, this can still return Luau code.
  */
 export async function generateCode({
   prompt,
@@ -93,26 +100,60 @@ export async function generateCode({
       model: 'gemini-3.5-flash',
     });
 
-    const systemPrompt = buildSystemPrompt(contextCode);
+    const jsonMode = looksLikeJsonBuilderRequest(prompt);
 
-    let userPrompt = prompt;
+    let fullPrompt: string;
 
-    if (requestType === 'edit' && contextCode) {
-      userPrompt = `[REQUEST TYPE: EDIT MODE]
+    if (jsonMode) {
+      fullPrompt = `You are a strict JSON generator for a Roblox Studio builder plugin.
+
+ABSOLUTE OUTPUT RULES:
+- Return ONLY valid JSON.
+- Do NOT return Lua code.
+- Do NOT use markdown.
+- Do NOT use code fences.
+- Do NOT write explanations.
+- Do NOT add comments.
+- The first character must be { and the last character must be }.
+- Keep the JSON complete and parseable.
+- Use under 70 objects so the response does not get cut off.
+
+${prompt}`;
+    } else {
+      const systemPrompt = buildCodeSystemPrompt(contextCode);
+
+      let userPrompt = prompt;
+
+      if (requestType === 'edit' && contextCode) {
+        userPrompt = `[REQUEST TYPE: EDIT MODE]
 Modify the following code to: ${prompt}
 
 Original code:
 \`\`\`lua
 ${contextCode}
 \`\`\``;
-    } else if (requestType === 'create') {
-      userPrompt = `[REQUEST TYPE: CREATE MODE]
+      } else if (requestType === 'create') {
+        userPrompt = `[REQUEST TYPE: CREATE MODE]
 Generate new Luau code for: ${prompt}
 
-Return ONLY the code, wrapped in a single lua code block.`;
+Return ONLY the code.`;
+      }
+
+      fullPrompt = `${systemPrompt}
+
+${userPrompt}`;
     }
 
-    const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
+    const generationConfig: any = {
+      temperature: jsonMode ? 0.15 : 0.7,
+      topP: jsonMode ? 0.7 : 0.8,
+      topK: 40,
+      maxOutputTokens: jsonMode ? 8192 : 4096,
+    };
+
+    if (jsonMode) {
+      generationConfig.responseMimeType = 'application/json';
+    }
 
     const result = await model.generateContent({
       contents: [
@@ -125,31 +166,43 @@ Return ONLY the code, wrapped in a single lua code block.`;
           ],
         },
       ],
-      generationConfig: {
-        temperature: 0.7,
-        topP: 0.8,
-        topK: 40,
-        maxOutputTokens: 2048,
-      },
+      generationConfig,
     });
 
     const response = result.response;
-    let code = response.text();
+    let output = response.text();
 
-    code = code
-      .replace(/^```lua\n?/gm, '')
-      .replace(/^```\n?/gm, '')
-      .replace(/\n?```$/gm, '')
-      .trim();
+    if (jsonMode) {
+      output = extractJsonOnly(output);
+
+      // Validate before sending to Roblox plugin.
+      try {
+        JSON.parse(output);
+      } catch (jsonError) {
+        console.error('Invalid JSON from Gemini:', output);
+        throw new Error(
+          `AI returned invalid JSON: ${
+            jsonError instanceof Error ? jsonError.message : 'Unknown JSON error'
+          }`
+        );
+      }
+    } else {
+      output = output
+        .replace(/^```lua\n?/gm, '')
+        .replace(/^```luau\n?/gm, '')
+        .replace(/^```\n?/gm, '')
+        .replace(/\n?```$/gm, '')
+        .trim();
+    }
 
     const generationTimeMs = Date.now() - startTime;
 
     const tokensUsed = Math.ceil(
-      (prompt.length + code.length + (contextCode?.length || 0)) / 4
+      (prompt.length + output.length + (contextCode?.length || 0)) / 4
     );
 
     return {
-      code,
+      code: output,
       tokensUsed,
       generationTimeMs,
     };
