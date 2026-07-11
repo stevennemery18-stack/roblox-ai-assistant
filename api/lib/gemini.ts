@@ -41,28 +41,26 @@ function extractJsonOnly(text: string): string {
   return cleaned.trim();
 }
 
-function looksLikeJsonBuilderRequest(prompt: string): boolean {
+function isJsonBuilderRequest(prompt: string): boolean {
   return (
     prompt.includes('Return ONLY valid JSON') ||
     prompt.includes('Required JSON schema') ||
     prompt.includes('"objects"') ||
-    prompt.includes('The plugin will parse your JSON')
+    prompt.includes('The plugin will parse your JSON') ||
+    prompt.includes('JSON schema')
   );
 }
 
-function buildCodeSystemPrompt(contextCode?: string): string {
+function buildCodePrompt(prompt: string, contextCode: string | undefined, requestType: 'create' | 'edit'): string {
   let systemPrompt = `You are an expert Roblox game developer and Lua/Luau specialist.
 
-CRITICAL RULES:
-1. Use modern Luau syntax.
-2. Use task.wait(), not wait().
-3. Never use deprecated APIs.
-4. Return ONLY code.
-5. No explanations.
-6. No markdown unless specifically requested.
-7. Use game:GetService() for services.
-8. Validate instances before using them.
-9. Avoid malicious code.
+RULES:
+- Return ONLY Luau code.
+- Do not use markdown.
+- Do not explain.
+- Use modern Roblox APIs.
+- Use task.wait(), not wait().
+- Do not use malicious code.
 `;
 
   if (contextCode) {
@@ -75,14 +73,93 @@ ${contextCode}
 `;
   }
 
-  return systemPrompt;
+  if (requestType === 'edit' && contextCode) {
+    return `${systemPrompt}
+
+Modify this code to: ${prompt}
+
+Original code:
+\`\`\`lua
+${contextCode}
+\`\`\``;
+  }
+
+  return `${systemPrompt}
+
+Generate new Luau code for:
+${prompt}
+
+Return ONLY code.`;
+}
+
+function makeJsonPrompt(prompt: string): string {
+  return `You are a strict JSON generator for a Roblox Studio builder plugin.
+
+ABSOLUTE OUTPUT RULES:
+- Return ONLY valid JSON.
+- First character must be {.
+- Last character must be }.
+- Do NOT use markdown.
+- Do NOT use code fences.
+- Do NOT write explanations.
+- Do NOT output Lua.
+- Do NOT add comments.
+- Do NOT use trailing commas.
+- Keep the JSON under 70 objects.
+- Every object must use the exact schema requested by the user prompt.
+- Use numbers, booleans, strings, arrays, and objects only.
+
+${prompt}`;
+}
+
+async function generateText(model: any, fullPrompt: string, jsonMode: boolean): Promise<string> {
+  const result = await model.generateContent({
+    contents: [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: fullPrompt,
+          },
+        ],
+      },
+    ],
+    generationConfig: {
+      temperature: jsonMode ? 0.1 : 0.7,
+      topP: jsonMode ? 0.65 : 0.8,
+      topK: 40,
+      maxOutputTokens: jsonMode ? 8192 : 4096,
+    },
+  });
+
+  return result.response.text();
+}
+
+async function repairJson(model: any, brokenJson: string, originalPrompt: string): Promise<string> {
+  const repairPrompt = `Fix this into valid JSON only.
+
+Rules:
+- Return ONLY valid JSON.
+- First character must be {.
+- Last character must be }.
+- No markdown.
+- No explanations.
+- Keep the same Roblox object plan and same schema.
+- Remove any invalid syntax or trailing commas.
+
+Original required instructions:
+${originalPrompt}
+
+Broken output:
+${brokenJson}`;
+
+  const fixed = await generateText(model, repairPrompt, true);
+  return extractJsonOnly(fixed);
 }
 
 /**
  * Call Gemini API.
- * IMPORTANT:
- * - For the one-button Studio builder plugin, this returns JSON build plans.
- * - For old code-generation calls, this can still return Luau code.
+ * For the one-button Roblox Studio plugin, this returns a JSON build plan.
  */
 export async function generateCode({
   prompt,
@@ -100,91 +177,21 @@ export async function generateCode({
       model: 'gemini-3.5-flash',
     });
 
-    const jsonMode = looksLikeJsonBuilderRequest(prompt);
+    const jsonMode = isJsonBuilderRequest(prompt);
+    const fullPrompt = jsonMode
+      ? makeJsonPrompt(prompt)
+      : buildCodePrompt(prompt, contextCode, requestType);
 
-    let fullPrompt: string;
-
-    if (jsonMode) {
-      fullPrompt = `You are a strict JSON generator for a Roblox Studio builder plugin.
-
-ABSOLUTE OUTPUT RULES:
-- Return ONLY valid JSON.
-- Do NOT return Lua code.
-- Do NOT use markdown.
-- Do NOT use code fences.
-- Do NOT write explanations.
-- Do NOT add comments.
-- The first character must be { and the last character must be }.
-- Keep the JSON complete and parseable.
-- Use under 70 objects so the response does not get cut off.
-
-${prompt}`;
-    } else {
-      const systemPrompt = buildCodeSystemPrompt(contextCode);
-
-      let userPrompt = prompt;
-
-      if (requestType === 'edit' && contextCode) {
-        userPrompt = `[REQUEST TYPE: EDIT MODE]
-Modify the following code to: ${prompt}
-
-Original code:
-\`\`\`lua
-${contextCode}
-\`\`\``;
-      } else if (requestType === 'create') {
-        userPrompt = `[REQUEST TYPE: CREATE MODE]
-Generate new Luau code for: ${prompt}
-
-Return ONLY the code.`;
-      }
-
-      fullPrompt = `${systemPrompt}
-
-${userPrompt}`;
-    }
-
-    const generationConfig: any = {
-      temperature: jsonMode ? 0.15 : 0.7,
-      topP: jsonMode ? 0.7 : 0.8,
-      topK: 40,
-      maxOutputTokens: jsonMode ? 8192 : 4096,
-    };
-
-    if (jsonMode) {
-      generationConfig.responseMimeType = 'application/json';
-    }
-
-    const result = await model.generateContent({
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            {
-              text: fullPrompt,
-            },
-          ],
-        },
-      ],
-      generationConfig,
-    });
-
-    const response = result.response;
-    let output = response.text();
+    let output = await generateText(model, fullPrompt, jsonMode);
 
     if (jsonMode) {
       output = extractJsonOnly(output);
 
-      // Validate before sending to Roblox plugin.
       try {
         JSON.parse(output);
-      } catch (jsonError) {
-        console.error('Invalid JSON from Gemini:', output);
-        throw new Error(
-          `AI returned invalid JSON: ${
-            jsonError instanceof Error ? jsonError.message : 'Unknown JSON error'
-          }`
-        );
+      } catch {
+        output = await repairJson(model, output, fullPrompt);
+        JSON.parse(output);
       }
     } else {
       output = output
