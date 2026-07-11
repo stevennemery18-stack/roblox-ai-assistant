@@ -1,6 +1,12 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+const apiKey =
+  process.env.GEMINI_API_KEY ||
+  process.env.GOOGLE_GENERATIVE_AI_API_KEY ||
+  process.env.GOOGLE_API_KEY ||
+  '';
+
+const genAI = new GoogleGenerativeAI(apiKey);
 
 /**
  * Enhanced system prompt for Roblox Luau code generation
@@ -43,7 +49,7 @@ function buildSystemPrompt(contextCode?: string): string {
 - game:GetService() for all services
 - UserInputService for input handling
 - RunService for game loops
-- HttpService for web requests (with pcall)
+- HttpService for web requests with pcall
 - TweenService for smooth animations
 - Debris for cleanup
 `;
@@ -79,43 +85,57 @@ export async function generateCode({
   const startTime = Date.now();
 
   try {
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+    if (!apiKey) {
+      throw new Error('Missing Gemini API key');
+    }
+
+    const model = genAI.getGenerativeModel({
+      model: 'gemini-2.5-flash',
+    });
 
     const systemPrompt = buildSystemPrompt(contextCode);
 
     let userPrompt = prompt;
+
     if (requestType === 'edit' && contextCode) {
-      userPrompt = `[REQUEST TYPE: EDIT MODE]\nModify the following code to: ${prompt}\n\nOriginal code:\n\`\`\`lua\n${contextCode}\n\`\`\``;
+      userPrompt = `[REQUEST TYPE: EDIT MODE]
+Modify the following code to: ${prompt}
+
+Original code:
+\`\`\`lua
+${contextCode}
+\`\`\``;
     } else if (requestType === 'create') {
-      userPrompt = `[REQUEST TYPE: CREATE MODE]\nGenerate new Luau code for: ${prompt}\n\nReturn ONLY the code, wrapped in a single lua code block.`;
+      userPrompt = `[REQUEST TYPE: CREATE MODE]
+Generate new Luau code for: ${prompt}
+
+Return ONLY the code, wrapped in a single lua code block.`;
     }
 
-    // Combine system prompt with user prompt
     const fullPrompt = `${systemPrompt}\n\n${userPrompt}`;
 
     const result = await model.generateContent({
-  contents: [
-    {
-      role: 'user',
-      parts: [
+      contents: [
         {
-          text: fullPrompt,
+          role: 'user',
+          parts: [
+            {
+              text: fullPrompt,
+            },
+          ],
         },
       ],
-    },
-  ],
-  generationConfig: {
-    temperature: 0.7,
-    topP: 0.8,
-    topK: 40,
-    maxOutputTokens: 2048,
-  },
-});
+      generationConfig: {
+        temperature: 0.7,
+        topP: 0.8,
+        topK: 40,
+        maxOutputTokens: 2048,
+      },
+    });
 
     const response = result.response;
     let code = response.text();
 
-    // Clean up code block markers if present
     code = code
       .replace(/^```lua\n?/gm, '')
       .replace(/^```\n?/gm, '')
@@ -124,8 +144,6 @@ export async function generateCode({
 
     const generationTimeMs = Date.now() - startTime;
 
-    // Estimate tokens used (Gemini doesn't always return exact counts)
-    // Rough estimate: ~4 chars per token
     const tokensUsed = Math.ceil(
       (prompt.length + code.length + (contextCode?.length || 0)) / 4
     );
@@ -137,8 +155,11 @@ export async function generateCode({
     };
   } catch (error) {
     console.error('Gemini API error:', error);
+
     throw new Error(
-      `Failed to generate code: ${error instanceof Error ? error.message : 'Unknown error'}`
+      `Failed to generate code: ${
+        error instanceof Error ? error.message : 'Unknown error'
+      }`
     );
   }
 }
